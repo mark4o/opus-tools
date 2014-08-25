@@ -556,14 +556,15 @@ int main(int argc, char **argv)
         } else if(strcmp(long_options[option_index].name,"picture")==0){
           const char *error_message;
           char       *picture_data;
+          size_t     data_len;
           save_cmd=0;
           picture_data=parse_picture_specification(optarg,&error_message,
-                                                   &seen_file_icons);
+                                                   &seen_file_icons,&data_len);
           if(picture_data==NULL){
             fprintf(stderr,"Error parsing picture option: %s\n",error_message);
             exit(1);
           }
-          comment_add(&inopt.comments, "METADATA_BLOCK_PICTURE", picture_data);
+          comment_add_pic(&inopt.comments, picture_data, data_len);
           free(picture_data);
         } else if(strcmp(long_options[option_index].name,"padding")==0){
           comment_padding=atoi(optarg);
@@ -1131,6 +1132,7 @@ static void comment_init(oe_enc_comments *comments, const char *vendor_string)
   writeint(p, 12+vendor_length, user_comment_list_length);
   comments->packet=p;
   comments->comment_start=12+vendor_length;
+  comments->pic_start=len;
   comments->length=len;
 }
 
@@ -1138,16 +1140,17 @@ void comment_add(oe_enc_comments *comments, char *tag, char *val)
 {
   char* p=comments->packet;
   int user_comment_list_length=readint(p, comments->comment_start);
-  int pos=comments->length;
+  int pos=comments->pic_start;
   int tag_len=(tag?strlen(tag)+1:0);
   int val_len=strlen(val);
-  int len=pos+4+tag_len+val_len;
+  int len=comments->length+4+tag_len+val_len;
 
   p=(char*)realloc(p, len);
   if(p==NULL){
     fprintf(stderr, "realloc failed in comment_add()\n");
     exit(1);
   }
+  memmove(p+pos+4+tag_len+val_len, p+pos, comments->length-pos);
 
   writeint(p, pos, tag_len+val_len);      /* length of comment */
   if(tag){
@@ -1156,6 +1159,28 @@ void comment_add(oe_enc_comments *comments, char *tag, char *val)
   }
   memcpy(p+pos+4+tag_len, val, val_len);  /* comment */
   writeint(p, comments->comment_start, user_comment_list_length+1);
+  comments->packet=p;
+  comments->pic_start=pos+4+tag_len+val_len;
+  comments->length=len;
+}
+
+void comment_add_pic(oe_enc_comments *comments, char *data, size_t data_len)
+{
+  char* p=comments->packet;
+  int first_pic=comments->pic_start==comments->length;
+  int picture_list_length=first_pic ? 0 : readint(p, comments->pic_start);
+  int pos=comments->length+first_pic*4;
+  int len=pos+4+data_len;
+
+  p=(char*)realloc(p, len);
+  if(p==NULL){
+    fprintf(stderr, "realloc failed in comment_add_pic()\n");
+    exit(1);
+  }
+
+  writeint(p, pos, data_len);             /* length of picture data */
+  memcpy(p+pos+4, data, data_len);        /* picture data */
+  writeint(p, comments->pic_start, picture_list_length+1);
   comments->packet=p;
   comments->length=len;
 }

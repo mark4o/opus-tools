@@ -24,6 +24,7 @@ typedef struct
 {
     char *packet;
     int comment_start;
+    int pic_start;
     int length;
 } oe_enc_comments;
 
@@ -54,6 +55,7 @@ void clear_padder(oe_enc_opt *opt);
 int setup_downmix(oe_enc_opt *opt, int out_channels);
 void clear_downmix(oe_enc_opt *opt);
 void comment_add(oe_enc_comments *comments, char *tag, char *val);
+void comment_add_pic(oe_enc_comments *comments, char *data, size_t data_len);
 
 typedef struct
 {
