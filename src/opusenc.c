@@ -556,15 +556,16 @@ int main(int argc, char **argv)
         } else if(strcmp(long_options[option_index].name,"picture")==0){
           const char *error_message;
           char       *picture_data;
+          size_t     data_len;
           save_cmd=0;
           picture_data=parse_picture_specification(optarg,&error_message,
-                                                   &seen_file_icons);
+                                                   &seen_file_icons,&data_len);
           if(picture_data==NULL){
             fprintf(stderr,"Error parsing picture option: %s\n",error_message);
             exit(1);
           }
-          comment_add(&inopt.comments,&inopt.comments_length,
-                      "METADATA_BLOCK_PICTURE",picture_data);
+          comment_add_len(&inopt.comments,&inopt.comments_length,
+                          "@PICTURE",picture_data,data_len);
           free(picture_data);
         } else if(strcmp(long_options[option_index].name,"padding")==0){
           comment_padding=atoi(optarg);
@@ -1136,16 +1137,21 @@ static void comment_init(char **comments, int* length, const char *vendor_string
 
 void comment_add(char **comments, int* length, char *tag, char *val)
 {
+    return comment_add_len(comments, length, tag, val, strlen(val));
+}
+
+void comment_add_len(char **comments, int* length, char *tag, char *val,
+    size_t val_len)
+{
   char* p=*comments;
   int vendor_length=readint(p, 8);
   int user_comment_list_length=readint(p, 8+4+vendor_length);
   int tag_len=(tag?strlen(tag)+1:0);
-  int val_len=strlen(val);
   int len=(*length)+4+tag_len+val_len;
 
   p=(char*)realloc(p, len);
   if(p==NULL){
-    fprintf(stderr, "realloc failed in comment_add()\n");
+    fprintf(stderr, "realloc failed in comment_add_len()\n");
     exit(1);
   }
 

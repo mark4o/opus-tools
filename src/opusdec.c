@@ -223,6 +223,7 @@ static inline void shape_dither_toshort(shapestate *_ss, short *_o, float *_i, i
 static void print_comments(char *comments, int length)
 {
    char *c=comments;
+   char *eq;
    int len, i, nb_fields, err=0;
 
    if (length<(8+4+4))
@@ -271,7 +272,13 @@ static void print_comments(char *comments, int length)
          fprintf (stderr, "Invalid/corrupted comments\n");
          return;
       }
-      err&=fwrite(c, 1, len, stderr)!=(unsigned)len;
+      if (len < 2 || *c != '@' || !(eq = memchr(c, '=', len)))
+      {
+         err&=fwrite(c, 1, len, stderr)!=(unsigned)len;
+      } else {
+         err&=fwrite(c, 1, eq-c+1, stderr)!=(unsigned)(eq-c+1);
+         fprintf (stderr, "<%d bytes>", len-(int)(eq-c+1));
+      }
       c+=len;
       length-=len;
       fprintf (stderr, "\n");

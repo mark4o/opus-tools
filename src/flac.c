@@ -191,11 +191,9 @@ static void metadata_callback(const FLAC__StreamDecoder *decoder,
     case FLAC__METADATA_TYPE_PICTURE:
       {
         char  *buf;
-        char  *b64;
         size_t mime_type_length;
         size_t description_length;
         size_t buf_sz;
-        size_t b64_sz;
         size_t offs;
         if(!inopt->copy_pictures)break;
         mime_type_length=strlen(metadata->data.picture.mime_type);
@@ -226,13 +224,9 @@ static void metadata_callback(const FLAC__StreamDecoder *decoder,
         offs+=4;
         memcpy(buf+offs,metadata->data.picture.data,
            metadata->data.picture.data_length);
-        b64_sz=BASE64_LENGTH(buf_sz)+1;
-        b64=(char *)malloc(b64_sz);
-        base64_encode(b64,buf,buf_sz);
+        comment_add_len(&inopt->comments,&inopt->comments_length,
+           "@PICTURE",buf,buf_sz);
         free(buf);
-        comment_add(&inopt->comments,&inopt->comments_length,
-           "METADATA_BLOCK_PICTURE",b64);
-        free(b64);
       }
       break;
     default:

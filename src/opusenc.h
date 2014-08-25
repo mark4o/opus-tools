@@ -48,6 +48,8 @@ void clear_padder(oe_enc_opt *opt);
 int setup_downmix(oe_enc_opt *opt, int out_channels);
 void clear_downmix(oe_enc_opt *opt);
 void comment_add(char **comments, int* length, char *tag, char *val);
+void comment_add_len(char **comments, int* length, char *tag, char *val,
+    size_t val_len);
 
 typedef struct
 {
