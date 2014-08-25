@@ -79,8 +79,8 @@
 #define VG_CHECK(x,y)
 #endif
 
-static void comment_init(char **comments, int* length, const char *vendor_string);
-static void comment_pad(char **comments, int* length, int amount);
+static void comment_init(oe_enc_comments *comments, const char *vendor_string);
+static void comment_pad(oe_enc_comments *comments, int amount);
 
 /*Write an Ogg page to a file pointer*/
 static inline int oe_write_page(ogg_page *page, FILE *fp)
@@ -388,9 +388,9 @@ int main(int argc, char **argv)
   opus_version=opus_get_version_string();
   /*Vendor string should just be the encoder library,
     the ENCODER comment specifies the tool used.*/
-  comment_init(&inopt.comments, &inopt.comments_length, opus_version);
+  comment_init(&inopt.comments, opus_version);
   snprintf(ENCODER_string, sizeof(ENCODER_string), "opusenc from %s %s",PACKAGE_NAME,PACKAGE_VERSION);
-  comment_add(&inopt.comments, &inopt.comments_length, "ENCODER", ENCODER_string);
+  comment_add(&inopt.comments, "ENCODER", ENCODER_string);
 
   /*Process command-line options*/
   cline_size=0;
@@ -537,22 +537,22 @@ int main(int argc, char **argv)
             fprintf(stderr, "Comments must be of the form name=value\n");
             exit(1);
           }
-          comment_add(&inopt.comments, &inopt.comments_length, NULL, optarg);
+          comment_add(&inopt.comments, NULL, optarg);
         }else if(strcmp(long_options[option_index].name,"artist")==0){
           save_cmd=0;
-          comment_add(&inopt.comments, &inopt.comments_length, "artist", optarg);
+          comment_add(&inopt.comments, "artist", optarg);
         } else if(strcmp(long_options[option_index].name,"title")==0){
           save_cmd=0;
-          comment_add(&inopt.comments, &inopt.comments_length, "title", optarg);
+          comment_add(&inopt.comments, "title", optarg);
         } else if(strcmp(long_options[option_index].name,"album")==0){
           save_cmd=0;
-          comment_add(&inopt.comments, &inopt.comments_length, "album", optarg);
+          comment_add(&inopt.comments, "album", optarg);
         } else if(strcmp(long_options[option_index].name,"date")==0){
           save_cmd=0;
-          comment_add(&inopt.comments, &inopt.comments_length, "date", optarg);
+          comment_add(&inopt.comments, "date", optarg);
         } else if(strcmp(long_options[option_index].name,"genre")==0){
           save_cmd=0;
-          comment_add(&inopt.comments, &inopt.comments_length, "genre", optarg);
+          comment_add(&inopt.comments, "genre", optarg);
         } else if(strcmp(long_options[option_index].name,"picture")==0){
           const char *error_message;
           char       *picture_data;
@@ -563,8 +563,7 @@ int main(int argc, char **argv)
             fprintf(stderr,"Error parsing picture option: %s\n",error_message);
             exit(1);
           }
-          comment_add(&inopt.comments,&inopt.comments_length,
-                      "METADATA_BLOCK_PICTURE",picture_data);
+          comment_add(&inopt.comments, "METADATA_BLOCK_PICTURE", picture_data);
           free(picture_data);
         } else if(strcmp(long_options[option_index].name,"padding")==0){
           comment_padding=atoi(optarg);
@@ -615,7 +614,7 @@ int main(int argc, char **argv)
   inFile=argv_utf8[optind];
   outFile=argv_utf8[optind+1];
 
-  if(cline_size>0)comment_add(&inopt.comments, &inopt.comments_length, "ENCODER_OPTIONS", ENCODER_string);
+  if(cline_size>0)comment_add(&inopt.comments, "ENCODER_OPTIONS", ENCODER_string);
 
   if(strcmp(inFile, "-")==0){
 #if defined WIN32 || defined _WIN32
@@ -852,9 +851,9 @@ int main(int argc, char **argv)
       pages_out++;
     }
 
-    comment_pad(&inopt.comments, &inopt.comments_length, comment_padding);
-    op.packet=(unsigned char *)inopt.comments;
-    op.bytes=inopt.comments_length;
+    comment_pad(&inopt.comments, comment_padding);
+    op.packet=(unsigned char *)inopt.comments.packet;
+    op.bytes=inopt.comments.length;
     op.b_o_s=0;
     op.e_o_s=0;
     op.granulepos=0;
@@ -874,7 +873,7 @@ int main(int argc, char **argv)
     pages_out++;
   }
 
-  free(inopt.comments);
+  free(inopt.comments.packet);
 
   input=malloc(sizeof(float)*frame_size*chan);
   if(input==NULL){
@@ -1115,7 +1114,7 @@ The comment header is decoded as follows:
                                      buf[base]=(val)&0xff; \
                                  }while(0)
 
-static void comment_init(char **comments, int* length, const char *vendor_string)
+static void comment_init(oe_enc_comments *comments, const char *vendor_string)
 {
   /*The 'vendor' field should be the actual encoding library used.*/
   int vendor_length=strlen(vendor_string);
@@ -1130,18 +1129,19 @@ static void comment_init(char **comments, int* length, const char *vendor_string
   writeint(p, 8, vendor_length);
   memcpy(p+12, vendor_string, vendor_length);
   writeint(p, 12+vendor_length, user_comment_list_length);
-  *length=len;
-  *comments=p;
+  comments->packet=p;
+  comments->comment_start=12+vendor_length;
+  comments->length=len;
 }
 
-void comment_add(char **comments, int* length, char *tag, char *val)
+void comment_add(oe_enc_comments *comments, char *tag, char *val)
 {
-  char* p=*comments;
-  int vendor_length=readint(p, 8);
-  int user_comment_list_length=readint(p, 8+4+vendor_length);
+  char* p=comments->packet;
+  int user_comment_list_length=readint(p, comments->comment_start);
+  int pos=comments->length;
   int tag_len=(tag?strlen(tag)+1:0);
   int val_len=strlen(val);
-  int len=(*length)+4+tag_len+val_len;
+  int len=pos+4+tag_len+val_len;
 
   p=(char*)realloc(p, len);
   if(p==NULL){
@@ -1149,34 +1149,34 @@ void comment_add(char **comments, int* length, char *tag, char *val)
     exit(1);
   }
 
-  writeint(p, *length, tag_len+val_len);      /* length of comment */
+  writeint(p, pos, tag_len+val_len);      /* length of comment */
   if(tag){
-    memcpy(p+*length+4, tag, tag_len);        /* comment tag */
-    (p+*length+4)[tag_len-1] = '=';           /* separator */
+    memcpy(p+pos+4, tag, tag_len);        /* comment tag */
+    (p+pos+4)[tag_len-1] = '=';           /* separator */
   }
-  memcpy(p+*length+4+tag_len, val, val_len);  /* comment */
-  writeint(p, 8+4+vendor_length, user_comment_list_length+1);
-  *comments=p;
-  *length=len;
+  memcpy(p+pos+4+tag_len, val, val_len);  /* comment */
+  writeint(p, comments->comment_start, user_comment_list_length+1);
+  comments->packet=p;
+  comments->length=len;
 }
 
-static void comment_pad(char **comments, int* length, int amount)
+static void comment_pad(oe_enc_comments *comments, int amount)
 {
   if(amount>0){
     int i;
     int newlen;
-    char* p=*comments;
+    char* p=comments->packet;
     /*Make sure there is at least amount worth of padding free, and
        round up to the maximum that fits in the current ogg segments.*/
-    newlen=(*length+amount+255)/255*255-1;
+    newlen=(comments->length+amount+255)/255*255-1;
     p=realloc(p,newlen);
     if(p==NULL){
       fprintf(stderr,"realloc failed in comment_pad()\n");
       exit(1);
     }
-    for(i=*length;i<newlen;i++)p[i]=0;
-    *comments=p;
-    *length=newlen;
+    for(i=comments->length;i<newlen;i++)p[i]=0;
+    comments->packet=p;
+    comments->length=newlen;
   }
 }
 #undef readint
