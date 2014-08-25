@@ -176,6 +176,32 @@ void info_opus_process(stream_processor *stream, ogg_page *page )
                     c+=len;
                     length-=len;
                 }
+                if(length>=4){
+                    /*check attached pictures*/
+                    nb_fields=readle32(c, 0);
+                    c+=4;
+                    length-=4;
+                    if (nb_fields < 0 || nb_fields>(length>>2)) {
+                        oi_warn(_("Invalid/corrupted attached pictures in stream %d\n"),stream->num);
+                        continue;
+                    }
+                    for (i=0;i<nb_fields;i++) {
+                        if (length<4) {
+                            oi_warn(_("Invalid/corrupted attached pictures in stream %d\n"),stream->num);
+                            break;
+                        }
+                        len=readle32(c, 0);
+                        c+=4;
+                        length-=4;
+                        if (len < 0 || len>length) {
+                            oi_warn(_("Invalid/corrupted attached pictures in stream %d\n"),stream->num);
+                            break;
+                        }
+                        check_picture(stream, 1, i, (unsigned char *)c, len);
+                        c+=len;
+                        length-=len;
+                    }
+                }
             }
 
             inf->doneheaders++;

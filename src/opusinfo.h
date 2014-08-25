@@ -50,3 +50,5 @@ void oi_info(char *format, ...);
 void oi_warn(char *format, ...);
 void oi_error(char *format, ...);
 void check_xiph_comment(stream_processor *stream, int i, const char *comment, int comment_length);
+void check_picture(stream_processor *stream, int is_attached_pic, int i,
+                   const unsigned char *data, int data_length);

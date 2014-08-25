@@ -101,6 +101,255 @@ void oi_error(char *format, ...)
 #define READ_U32_BE(buf) \
     (((buf)[0]<<24)|((buf)[1]<<16)|((buf)[2]<<8)|((buf)[3]&0xff))
 
+void check_picture(stream_processor *stream, int is_attached_pic, int i,
+    const unsigned char *data, int data_sz)
+{
+    const char     *pic_style;
+    ogg_uint32_t   picture_type;
+    ogg_uint32_t   mime_type_length;
+    ogg_uint32_t   description_length;
+    ogg_uint32_t   width;
+    ogg_uint32_t   height;
+    ogg_uint32_t   depth;
+    ogg_uint32_t   colors;
+    ogg_uint32_t   image_length;
+    ogg_uint32_t   file_width;
+    ogg_uint32_t   file_height;
+    ogg_uint32_t   file_depth;
+    ogg_uint32_t   file_colors;
+    int            is_url;
+    int            format;
+    int            has_palette;
+    int            colors_set;
+    int            j;
+
+    pic_style = is_attached_pic
+        ? _("attached picture") : _("METADATA_BLOCK_PICTURE comment");
+
+    if(data_sz < 32) {
+        oi_warn(_("WARNING: Not enough data for %s %d (stream %d): "
+              "expected at least 32 bytes, got %i\n"), pic_style, i,
+              stream->num, data_sz);
+        return;
+    }
+    j = 0;
+    picture_type = READ_U32_BE(data+j);
+    if(picture_type > 20) {
+        oi_warn(_("WARNING: Unknown picture type in %s %d (stream %d): "
+              "%li\n"), pic_style, i, stream->num, (long)picture_type);
+    }
+    if(picture_type >= 1 && picture_type <= 2) {
+        if(stream->seen_file_icons & picture_type) {
+            oi_warn(_("WARNING: Duplicate picture type in %s %d (stream %d): "
+                  " %s\n"), pic_style, i, stream->num, picture_type == 1 ?
+                  _("only one picture of type 1 (32x32 icon) allowed") :
+                  _("only one picture of type 2 (icon) allowed"));
+        }
+        stream->seen_file_icons |= picture_type;
+    }
+    j += 4;
+    mime_type_length = READ_U32_BE(data+j);
+    if(mime_type_length > (size_t)data_sz-32) {
+        oi_warn(_("WARNING: Invalid mime type length in %s %d (stream %d): "
+              "%lu bytes when %i are available\n"), pic_style, i, stream->num,
+              (long)mime_type_length, data_sz-32);
+        return;
+    }
+    for (j += 4; j < 8+(int)mime_type_length; j++) {
+        if(data[j] < 0x20 || data[j] > 0x7E) {
+            oi_warn(_("WARNING: Invalid character in mime type of "
+                  "%s %d (stream %d): "
+                  "0x%02X\n"), pic_style, i, stream->num, data[j]);
+        }
+    }
+    description_length = READ_U32_BE(data+j);
+    if(description_length > (size_t)data_sz-mime_type_length-32) {
+        oi_warn(_("WARNING: Invalid description length in "
+              "%s %d (stream %d): %lu bytes when %i are available\n"),
+              pic_style, i, stream->num, (long)description_length,
+              data_sz-mime_type_length-32);
+        return;
+    }
+    /*TODO: Validate that description is UTF-8.*/
+    j += 4+description_length;
+    width = READ_U32_BE(data+j);
+    j += 4;
+    height = READ_U32_BE(data+j);
+    j += 4;
+    depth = READ_U32_BE(data+j);
+    j += 4;
+    colors = READ_U32_BE(data+j);
+    j += 4;
+    /*If any value is non-zero, then they all MUST be valid values, and
+      so colors should be treated as set (even if zero).*/
+    colors_set = width != 0 || height != 0 || depth != 0 || colors != 0;
+    /*This isn't triggered if colors == 0, since that can be a valid
+      value.*/
+    if((width == 0 || height == 0 || depth == 0) && colors_set) {
+        oi_warn(_("WARNING: Invalid picture parameters in %s %d (stream %d): "
+              "width (%i), height (%i), depth (%i), and colors (%i) MUST "
+              "either be set to valid values or all set to 0\n"), pic_style, i,
+              stream->num, (int)width, (int)height, (int)depth,
+              (int)colors);
+    }
+    image_length = READ_U32_BE(data+j);
+    j += 4;
+    /*This one should match exactly.*/
+    if(image_length != (size_t)data_sz-j) {
+        oi_warn(_("WARNING: Invalid image data size in %s %d (stream %d): "
+              "%lu bytes when %i are available\n"), pic_style, i, stream->num,
+              (long)image_length, data_sz-j);
+        return;
+    }
+    is_url = 0;
+    format = -1;
+    if(mime_type_length == 10
+          && oi_strncasecmp((const char*)data+8, "image/jpeg",
+                mime_type_length) == 0) {
+        if(!is_jpeg(data+j, image_length)) {
+            oi_warn(_("WARNING: Invalid image data in %s %d (stream %d): "
+                  "mime type is %.*s but image does not appear to be JPEG\n"),
+                  pic_style, i, stream->num, mime_type_length, data+8);
+            return;
+        }
+        format = PIC_FORMAT_JPEG;
+    }
+    else if(mime_type_length == 9
+          && oi_strncasecmp((const char *)data+8, "image/png",
+                mime_type_length) == 0) {
+        if(!is_png(data+j, image_length)) {
+            oi_warn(_("WARNING: Invalid image data in %s %d (stream %d): "
+                  "mime type is %.*s but image does not appear to be PNG\n"),
+                  pic_style, i, stream->num, mime_type_length, data+8);
+            return;
+        }
+        format = PIC_FORMAT_PNG;
+    }
+    else if(mime_type_length == 9
+          && oi_strncasecmp((const char *)data+8, "image/gif",
+                mime_type_length) == 0) {
+        if(!is_gif(data+j, image_length)) {
+            oi_warn(_("WARNING: Invalid image data in %s %d (stream %d): "
+                  "mime type is %.*s but image does not appear to be PNG\n"),
+                  pic_style, i, stream->num, mime_type_length, data+8);
+            return;
+        }
+        format = PIC_FORMAT_GIF;
+    }
+    else if(mime_type_length == 3
+          && strncmp((const char *)data+8, "-->", mime_type_length) == 0) {
+        is_url = 1;
+        /*TODO: validate URL.*/
+    }
+    else if(mime_type_length == 0 || (mime_type_length == 6 &&
+          oi_strncasecmp((const char *)data+8, "image/",
+                mime_type_length) == 0)) {
+        if(is_jpeg(data+j, image_length)) {
+            format = PIC_FORMAT_JPEG;
+        }
+        else if(is_png(data+j, image_length)) {
+            format = PIC_FORMAT_PNG;
+        }
+        else if(is_gif(data+j, image_length)) {
+            format = PIC_FORMAT_GIF;
+        }
+        else {
+            oi_warn(_("WARNING: Unknown image format in %s %d (stream %d): "
+                  "\"%.*s\" may not be well-supported\n"), pic_style, i,
+                  stream->num, mime_type_length, data+8);
+        }
+    }
+    else {
+        oi_warn(_("WARNING: Unknown mime type in %s %d (stream %d): "
+              "\"%.*s\" may not be well-supported\n"), pic_style, i,
+              stream->num, mime_type_length, data+8);
+    }
+    file_width = file_height = file_depth = file_colors = 0;
+    has_palette = -1;
+    switch(format) {
+        case PIC_FORMAT_JPEG:
+           extract_jpeg_params(data+j, image_length,
+                 &file_width, &file_height, &file_depth, &file_colors,
+                 &has_palette);
+           break;
+        case PIC_FORMAT_PNG:
+           extract_png_params(data+j, image_length,
+                 &file_width, &file_height, &file_depth, &file_colors,
+                 &has_palette);
+           break;
+        case PIC_FORMAT_GIF:
+           extract_gif_params(data+j, image_length,
+                 &file_width, &file_height, &file_depth, &file_colors,
+                 &has_palette);
+           break;
+    }
+    if(format >= 0 && has_palette < 0) {
+        /*We should have been able to affirmatively determine whether or
+          not there was a palette if we parsed the image successfully.*/
+        oi_warn(_("WARNING: Could not parse image parameters in"
+              "%s %d (stream %d): possibly corrupt image?\n"),
+              pic_style, i, stream->num);
+    }
+    if(width && width != file_width) {
+        oi_warn(_("WARNING: Mismatched picture parameters in "
+              "%s %d (stream %d): "
+              "width declared as %u but appears to be %u\n"), pic_style, i,
+              stream->num, (unsigned)width, (unsigned)file_width);
+    }
+    if(height && height != file_height) {
+        oi_warn(_("WARNING: Mismatched picture parameters in "
+              "%s %d (stream %d): "
+              "height declared as %u but appears to be %u\n"), pic_style, i,
+              stream->num, (unsigned)height, (unsigned)file_height);
+    }
+    if(depth && depth != file_depth) {
+        oi_warn(_("WARNING: Mismatched picture parameters in "
+              "%s %d (stream %d): "
+              "depth declared as %u but appears to be %u\n"), pic_style, i,
+              stream->num, (unsigned)depth, (unsigned)file_depth);
+    }
+    if(has_palette >= 0 && colors_set && colors != file_colors) {
+        oi_warn(_("WARNING: Mismatched picture parameters in "
+              "%s %d (stream %d): palette size declared as %u but appears "
+              "to be %u\n"), pic_style, i, stream->num,
+              (unsigned)colors, (unsigned)file_colors);
+    }
+    if(picture_type == 1
+          && ((is_url && (width != 0 || height != 0)
+                      && (width != 32 || height != 32))
+                || (!is_url && (file_width != 32 || file_height != 32)))) {
+        oi_warn(_("WARNING: Invalid picture in %s %d (stream %d): "
+              "picture of type 1 (32x32 icon) MUST be a 32x32 PNG, but "
+              "the image has dimensions %ux%u\n"), pic_style, i, stream->num,
+              (unsigned)is_url?width:file_width,
+              (unsigned)is_url?height:file_height);
+    }
+    if(picture_type == 1 && !is_url && format != PIC_FORMAT_PNG) {
+        oi_warn(_("WARNING: Invalid picture in %s %d (stream %d): "
+              "picture of type 1 (32x32 icon) MUST be a 32x32 PNG, but "
+              "the image does not appear to be a PNG\n"), pic_style, i,
+              stream->num);
+    }
+    /*Print the contents of the block using the same format as the
+      SPECIFICATION argument to opusenc/flac/etc. (except without an image
+      filename, since we don't know the original).*/
+    oi_info("%s%u|%.*s|%.*s|%ux%ux%u",
+          is_attached_pic ? "Attached Picture: " : "\tMETADATA_BLOCK_PICTURE=",
+          (unsigned)picture_type,
+          mime_type_length, data+8,
+          description_length, data+12+mime_type_length,
+          (unsigned)width, (unsigned)height, (unsigned)depth);
+    if(colors) {
+        oi_info("/%u", (unsigned)colors);
+    }
+    if(is_url) {
+        oi_info("|%.*s\n", image_length, data+j);
+    }
+    else {
+        oi_info("|<%u bytes of image data>\n",(unsigned)image_length);
+    }
+}
+
 void check_xiph_comment(stream_processor *stream, int i, const char *comment,
     int comment_length)
 {
@@ -256,25 +505,10 @@ void check_xiph_comment(stream_processor *stream, int i, const char *comment,
 
      if(sep - comment == 22
            && oi_strncasecmp(comment, "METADATA_BLOCK_PICTURE", 22) == 0) {
-         ogg_uint32_t   picture_type;
-         ogg_uint32_t   mime_type_length;
-         ogg_uint32_t   description_length;
-         ogg_uint32_t   width;
-         ogg_uint32_t   height;
-         ogg_uint32_t   depth;
-         ogg_uint32_t   colors;
-         ogg_uint32_t   image_length;
-         ogg_uint32_t   file_width;
-         ogg_uint32_t   file_height;
-         ogg_uint32_t   file_depth;
-         ogg_uint32_t   file_colors;
          unsigned char *data;
          int            data_sz;
          int            len;
-         int            is_url;
-         int            format;
-         int            has_palette;
-         int            colors_set;
+
          len=comment_length - (sep+1-comment);
          /*Decode the Base64 encoded data.*/
          if(len&3) {
@@ -347,257 +581,7 @@ void check_xiph_comment(stream_processor *stream, int i, const char *comment,
              }
          }
          /*Now validate the METADATA_BLOCK_PICTURE structure.*/
-         if(data_sz < 32) {
-             oi_warn(_("WARNING: Not enough data for "
-                   "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                   "expected at least 32 bytes, got %i\n"), i, stream->num,
-                   data_sz);
-             free(data);
-             return;
-         }
-         j = 0;
-         picture_type = READ_U32_BE(data+j);
-         if(picture_type > 20) {
-             oi_warn(_("WARNING: Unknown picture type in "
-                   "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                   "%li\n"), i, stream->num, (long)picture_type);
-             broken = 1;
-         }
-         if(picture_type >= 1 && picture_type <= 2) {
-             if(stream->seen_file_icons & picture_type) {
-                 oi_warn(_("WARNING: Duplicate picture type in "
-                       "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                       " %s\n"), i, stream->num, picture_type == 1 ?
-                       _("only one picture of type 1 (32x32 icon) allowed") :
-                       _("only one picture of type 2 (icon) allowed"));
-                 broken = 1;
-             }
-             stream->seen_file_icons |= picture_type;
-         }
-         j += 4;
-         mime_type_length = READ_U32_BE(data+j);
-         if(mime_type_length > (size_t)data_sz-32) {
-             oi_warn(_("WARNING: Invalid mime type length in "
-                   "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                   "%lu bytes when %i are available\n"), i, stream->num,
-                   (long)mime_type_length, data_sz-32);
-             free(data);
-             return;
-         }
-         for (j += 4; j < 8+(int)mime_type_length; j++) {
-             if(data[j] < 0x20 || data[j] > 0x7E) {
-                 oi_warn(_("WARNING: Invalid character in mime type of "
-                       "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                       "0x%02X\n"), i, stream->num, data[j]);
-                 broken = 1;
-             }
-         }
-         description_length = READ_U32_BE(data+j);
-         if(description_length > (size_t)data_sz-mime_type_length-32) {
-             oi_warn(_("WARNING: Invalid description length in "
-                   "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                   "%lu bytes when %i are available\n"), i, stream->num,
-                   (long)description_length, data_sz-mime_type_length-32);
-             free(data);
-             return;
-         }
-         /*TODO: Validate that description is UTF-8.*/
-         j += 4+description_length;
-         width = READ_U32_BE(data+j);
-         j += 4;
-         height = READ_U32_BE(data+j);
-         j += 4;
-         depth = READ_U32_BE(data+j);
-         j += 4;
-         colors = READ_U32_BE(data+j);
-         j += 4;
-         /*If any value is non-zero, then they all MUST be valid values, and
-           so colors should be treated as set (even if zero).*/
-         colors_set = width != 0 || height != 0 || depth != 0 || colors != 0;
-         /*This isn't triggered if colors == 0, since that can be a valid
-           value.*/
-         if((width == 0 || height == 0 || depth == 0) && colors_set) {
-             oi_warn(_("WARNING: Invalid picture parameters in "
-                   "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                   "width (%i), height (%i), depth (%i), and colors (%i) MUST "
-                   "either be set to valid values or all set to 0\n"), i,
-                   stream->num, (int)width, (int)height, (int)depth,
-                   (int)colors);
-             broken = 1;
-         }
-         image_length = READ_U32_BE(data+j);
-         j += 4;
-         /*This one should match exactly.*/
-         if(image_length != (size_t)data_sz-j) {
-             oi_warn(_("WARNING: Invalid image data size in "
-                   "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                   "%lu bytes when %i are available\n"), i, stream->num,
-                   (long)image_length, data_sz-j);
-             free(data);
-             return;
-         }
-         is_url = 0;
-         format = -1;
-         if(mime_type_length == 10
-               && oi_strncasecmp((const char*)data+8, "image/jpeg",
-                     mime_type_length) == 0) {
-             if(!is_jpeg(data+j, image_length)) {
-                 oi_warn(_("WARNING: Invalid image data in "
-                       "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                       "mime type is %.*s but image does not appear to be "
-                       "JPEG\n"), i, stream->num, mime_type_length, data+8);
-                 free(data);
-                 return;
-             }
-             format = PIC_FORMAT_JPEG;
-         }
-         else if(mime_type_length == 9
-               && oi_strncasecmp((const char *)data+8, "image/png",
-                     mime_type_length) == 0) {
-             if(!is_png(data+j, image_length)) {
-                 oi_warn(_("WARNING: Invalid image data in "
-                       "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                       "mime type is %.*s but image does not appear to be "
-                       "PNG\n"), i, stream->num, mime_type_length, data+8);
-                 free(data);
-                 return;
-             }
-             format = PIC_FORMAT_PNG;
-         }
-         else if(mime_type_length == 9
-               && oi_strncasecmp((const char *)data+8, "image/gif",
-                     mime_type_length) == 0) {
-             if(!is_gif(data+j, image_length)) {
-                 oi_warn(_("WARNING: Invalid image data in "
-                       "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                       "mime type is %.*s but image does not appear to be "
-                       "PNG\n"), i, stream->num, mime_type_length, data+8);
-                 free(data);
-                 return;
-             }
-             format = PIC_FORMAT_GIF;
-         }
-         else if(mime_type_length == 3
-               && strncmp((const char *)data+8, "-->", mime_type_length) == 0) {
-             is_url = 1;
-             /*TODO: validate URL.*/
-         }
-         else if(mime_type_length == 0 || (mime_type_length == 6 &&
-               oi_strncasecmp((const char *)data+8, "image/",
-                     mime_type_length) == 0)) {
-             if(is_jpeg(data+j, image_length)) {
-                 format = PIC_FORMAT_JPEG;
-             }
-             else if(is_png(data+j, image_length)) {
-                 format = PIC_FORMAT_PNG;
-             }
-             else if(is_gif(data+j, image_length)) {
-                 format = PIC_FORMAT_GIF;
-             }
-             else {
-                 oi_warn(_("WARNING: Unknown image format in "
-                       "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                       "\"%.*s\" may not be well-supported\n"), i, stream->num,
-                       mime_type_length, data+8);
-             }
-         }
-         else {
-             oi_warn(_("WARNING: Unknown mime type in "
-                   "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                   "\"%.*s\" may not be well-supported\n"), i, stream->num,
-                   mime_type_length, data+8);
-         }
-         file_width = file_height = file_depth = file_colors = 0;
-         has_palette = -1;
-         switch(format) {
-             case PIC_FORMAT_JPEG:
-                extract_jpeg_params(data+j, image_length,
-                      &file_width, &file_height, &file_depth, &file_colors,
-                      &has_palette);
-                break;
-             case PIC_FORMAT_PNG:
-                extract_png_params(data+j, image_length,
-                      &file_width, &file_height, &file_depth, &file_colors,
-                      &has_palette);
-                break;
-             case PIC_FORMAT_GIF:
-                extract_gif_params(data+j, image_length,
-                      &file_width, &file_height, &file_depth, &file_colors,
-                      &has_palette);
-                break;
-         }
-         if(format >= 0 && has_palette < 0) {
-             /*We should have been able to affirmatively determine whether or
-               not there was a palette if we parsed the image successfully.*/
-             oi_warn(_("WARNING: Could not parse image parameters in"
-                   "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                   "possibly corrupt image?\n"), i, stream->num);
-             broken = 1;
-         }
-         if(width && width != file_width) {
-             oi_warn(_("WARNING: Mismatched picture parameters in "
-                   "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                   "width declared as %u but appears to be %u\n"), i,
-                   stream->num, (unsigned)width, (unsigned)file_width);
-             broken = 1;
-         }
-         if(height && height != file_height) {
-             oi_warn(_("WARNING: Mismatched picture parameters in "
-                   "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                   "height declared as %u but appears to be %u\n"), i,
-                   stream->num, (unsigned)height, (unsigned)file_height);
-             broken = 1;
-         }
-         if(depth && depth != file_depth) {
-             oi_warn(_("WARNING: Mismatched picture parameters in "
-                   "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                   "depth declared as %u but appears to be %u\n"), i,
-                   stream->num, (unsigned)depth, (unsigned)file_depth);
-             broken = 1;
-         }
-         if(has_palette >= 0 && colors_set && colors != file_colors) {
-             oi_warn(_("WARNING: Mismatched picture parameters in "
-                   "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                   "palette size declared as %u but appears to be %u\n"), i,
-                   stream->num, (unsigned)colors, (unsigned)file_colors);
-             broken = 1;
-         }
-         if(picture_type == 1
-               && ((is_url && (width != 0 || height != 0)
-                           && (width != 32 || height != 32))
-                     || (!is_url && (file_width != 32 || file_height != 32)))) {
-             oi_warn(_("WARNING: Invalid picture in "
-                   "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                   "picture of type 1 (32x32 icon) MUST be a 32x32 PNG, but "
-                   "the image has dimensions %ux%u\n"), i, stream->num,
-                   (unsigned)is_url?width:file_width,
-                   (unsigned)is_url?height:file_height);
-             broken = 1;
-         }
-         if(picture_type == 1 && !is_url && format != PIC_FORMAT_PNG) {
-             oi_warn(_("WARNING: Invalid picture in "
-                   "METADATA_BLOCK_PICTURE comment %d (stream %d): "
-                   "picture of type 1 (32x32 icon) MUST be a 32x32 PNG, but "
-                   "the image does not appear to be a PNG\n"), i, stream->num);
-             broken = 1;
-         }
-         /*Print the contents of the block using the same format as the
-           SPECIFICATION argument to opusenc/flac/etc. (except without an image
-           filename, since we don't know the original).*/
-         oi_info("\t%.*s%u|%.*s|%.*s|%ux%ux%u",
-               sep+1-comment, comment, (unsigned)picture_type,
-               mime_type_length, data+8,
-               description_length, data+12+mime_type_length,
-               (unsigned)width, (unsigned)height, (unsigned)depth);
-         if(colors) {
-             oi_info("/%u", (unsigned)colors);
-         }
-         if(is_url) {
-             oi_info("|%.*s\n", image_length, data+j);
-         }
-         else {
-             oi_info("|<%u bytes of image data>\n",(unsigned)image_length);
-         }
+         check_picture(stream, 0, i, data, data_sz);
          free(data);
          return;
      }
